@@ -1,0 +1,20 @@
+{
+  "name": "riosf5-sistema",
+  "version": "2.2.0",
+  "description": "Sistema RiosF5 - Treinamento e Controle de Documentos",
+  "main": "index.js",
+  "scripts": {
+    "start": "npm run start:dev",
+    "start:frontend": "cd frontend/riosf5-frontend/frontend/riosf5-frontend && npm run dev",
+    "start:backend": "cd backend/riosf5-backend/src && python main.py",
+    "start:dev": "concurrently --kill-others \"npm run start:backend\" \"npm run start:frontend\"",
+    "install:all": "cd frontend/riosf5-frontend/frontend/riosf5-frontend && npm install && cd ../../../../backend/riosf5-backend && pip install -r requirements.txt",
+    "build": "cd frontend/riosf5-frontend/frontend/riosf5-frontend && npm run build"
+  },
+  "keywords": ["riosf5", "treinamento", "consultoria"],
+  "author": "RiosF5 Consultoria",
+  "license": "ISC",
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

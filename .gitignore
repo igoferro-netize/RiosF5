@@ -1,0 +1,29 @@
+# Node
+node_modules/
+frontend/riosf5-frontend/node_modules/
+frontend/riosf5-frontend/dist/
+
+# Python
+**/venv/
+**/.venv/
+*.pyc
+__pycache__/
+
+# Env files
+.env
+*.env
+
+# Editor
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Build
+dist/
+
+# OS
+Thumbs.db
