@@ -9,6 +9,13 @@ class AprovacaoDocumento(db.Model):
     status = db.Column(db.String(20), default='pendente')
     observacoes = db.Column(db.Text)
     data_aprovacao = db.Column(db.DateTime, default=datetime.utcnow)
+    # Novos campos para persistir tokens, ordem e assinatura
+    token = db.Column(db.String(255), nullable=True, unique=False)
+    ordem = db.Column(db.Integer, default=0)
+    assinatura = db.Column(db.Text, nullable=True)
+    acao = db.Column(db.String(20), nullable=True)
+    token_expiracao = db.Column(db.DateTime, nullable=True)
+    email_enviado = db.Column(db.Boolean, default=False)
 
 class Notificacao(db.Model):
     __tablename__ = 'notificacoes'

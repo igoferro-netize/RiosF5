@@ -1,0 +1,47 @@
+# Render manifest for RiosF5
+# - Serviço backend (Python/Flask)
+# - Serviço frontend (Static site - Vite build)
+
+services:
+  - type: web
+    name: riosf5-backend
+    env: python
+    region: oregon
+    repo: https://github.com/igoferro-netize/RiosF5.git
+    branch: main
+    root: backend/riosf5-backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn src.main:app --bind 0.0.0.0:$PORT --workers 4
+    plan: free
+    envVars:
+      - key: FLASK_DEBUG
+        value: 'False'
+      - key: JWT_SECRET
+        value: "${{JWT_SECRET}}"
+      - key: DATABASE_URL
+        value: "${{DATABASE_URL}}"
+      - key: CORS_ORIGINS
+        value: "${{CORS_ORIGINS}}"
+
+  - type: static
+    name: riosf5-frontend
+    env: static
+    region: oregon
+    repo: https://github.com/igoferro-netize/RiosF5.git
+    branch: main
+    root: frontend/riosf5-frontend
+    buildCommand: npm install --legacy-peer-deps && npm run build
+    staticPublishPath: dist
+    plan: free
+    envVars:
+      - key: VITE_API_URL
+        value: "${{VITE_API_URL}}"
+      - key: VITE_DOC_VALIDATION_BASE_URL
+        value: "${{VITE_DOC_VALIDATION_BASE_URL}}"
+
+# Notes:
+# - After pushing this manifest to GitHub, connect the repo in Render and enable "Auto Deploy".
+# - Set the environment variables in the Render dashboard (or use the UI to fill the placeholders above).
+# - For production use: create a Managed Postgres on Render and set DATABASE_URL accordingly.
+# - If you prefer a single service that builds the frontend and serves it from the backend, let me know and
+#   I can generate an alternate manifest and a backend buildCommand that builds the frontend and copies `dist` to `backend/riosf5-backend/src/static`.

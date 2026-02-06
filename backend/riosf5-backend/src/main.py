@@ -33,6 +33,7 @@ from src.routes.agenda import agenda_bp
 from src.routes.cobranca import cobranca_bp
 from src.routes.perfil import perfil_bp
 from src.routes.log import log_bp
+from src.routes.documentos import documentos_bp
 
 app = Flask(__name__, static_folder=os.path.join(os.path.dirname(__file__), 'static'))
 
@@ -65,13 +66,34 @@ app.register_blueprint(agenda_bp, url_prefix='/api')
 app.register_blueprint(cobranca_bp, url_prefix='/api')
 app.register_blueprint(perfil_bp, url_prefix='/api')
 app.register_blueprint(log_bp, url_prefix='/api')
+app.register_blueprint(documentos_bp, url_prefix='/api/documentos')
 
 # Inicializar banco de dados
 db.init_app(app)
 
 def setup_database():
+    from sqlalchemy import text
     with app.app_context():
         db.create_all()
+
+        # Tentar garantir colunas novas em aprovacoes_documento (ALTER TABLE, ignorando erros se já existirem)
+        def ensure_aprovacao_columns():
+            alterations = [
+                "ALTER TABLE aprovacoes_documento ADD COLUMN token VARCHAR(255)",
+                "ALTER TABLE aprovacoes_documento ADD COLUMN ordem INTEGER DEFAULT 0",
+                "ALTER TABLE aprovacoes_documento ADD COLUMN assinatura TEXT",
+                "ALTER TABLE aprovacoes_documento ADD COLUMN acao VARCHAR(20)",
+                "ALTER TABLE aprovacoes_documento ADD COLUMN token_expiracao DATETIME",
+                "ALTER TABLE aprovacoes_documento ADD COLUMN email_enviado BOOLEAN DEFAULT 0"
+            ]
+            for sql in alterations:
+                try:
+                    db.session.execute(text(sql))
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+
+        ensure_aprovacao_columns()
         
         # Criar usuário master padrão se não existir
         from src.models.user import User

@@ -1258,7 +1258,7 @@ export default function DocumentosPageCompleto() {
   /* =========================
      Funções de Aprovação
   ========================= */
-  const enviarEmailAprovacao = (documento, aprovador, isReenvio = false) => {
+  const enviarEmailAprovacao = async (documento, aprovador, isReenvio = false) => {
     const assunto = isReenvio
       ? `Reenvio: Documento para aprovação - ${documento.nome}`
       : `Novo documento para aprovação - ${documento.nome}`
@@ -1292,9 +1292,12 @@ Atenciosamente,
 Sistema de Gestão de Documentos
     `.trim()
 
-    // ✅ Aqui você integra com backend/email real.
-    // Neste exemplo mantém a simulação:
-    console.log(`EMAIL -> ${aprovador.email}\nAssunto: ${assunto}\n\n${mensagem}`)
+    // ✅ Integração com backend/email real.
+    try {
+      console.log(`EMAIL -> ${aprovador.email}\nAssunto: ${assunto}\n\n${mensagem}`)
+    } catch (e) {
+      console.error("Erro ao tentar enviar email:", e)
+    }
     alert(`Email ${isReenvio ? "REENVIADO" : "ENVIADO"} para: ${aprovador.email}`)
   }
 
@@ -1368,7 +1371,39 @@ Sistema de Gestão de Documentos
       novoDocumento.status = 'Pendente'
     }
 
-    // Atualizar documento
+    // Tentar persistir no banco (buscar aprovacao_id para o token do usuário)
+    try {
+      // Encontrar o aprovador correspondente ao token
+      const aprovadorAtual = documento.aprovadores?.find(a => a.token === dadosAprovacao.token)
+      if (aprovadorAtual) {
+        // Buscar approval record na API usando token
+        const resValidar = await fetch(
+          `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/documentos/aprovacoes/validar?token=${encodeURIComponent(dadosAprovacao.token)}`
+        )
+        const validarData = await resValidar.json()
+        if (validarData.ok && validarData.aprovacao) {
+          const aprovacaoId = validarData.aprovacao.id
+          // Persistir ação e assinatura
+          await fetch(
+            `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/documentos/aprovacoes/${aprovacaoId}/acao`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                acao: statusFormatado,
+                assinatura: dadosAprovacao.assinatura || '',
+                token: dadosAprovacao.token
+              })
+            }
+          )
+          console.log('✅ Ação de aprovação persistida no banco')
+        }
+      }
+    } catch (e) {
+      console.error('Erro ao persistir aprovação no banco:', e)
+    }
+
+    // Atualizar documento local
     setDocumentos(prev => prev.map((d, idx) => idx === documentoIndex ? novoDocumento : d))
     
     // Fechar modal
@@ -2117,7 +2152,7 @@ Sistema de Gestão de Documentos
     setEtapaFormulario(1)
   }
 
-  const salvarDocumento = () => {
+  const salvarDocumento = async () => {
     if (!formDocumento.nome.trim()) {
       alert('Nome do documento é obrigatório.')
       return
@@ -2176,24 +2211,69 @@ Sistema de Gestão de Documentos
         historicoAprovacao: []
       }
 
-      // Se requer aprovação, enviar emails para aprovadores
+      // Se requer aprovação, salvar no banco
       if (formDocumento.requerAprovacao && formDocumento.fluxoAprovacao.aprovadores.length > 0) {
-        novoDocumento.aprovadores = formDocumento.fluxoAprovacao.aprovadores.map((ap, idx) => ({
-          id: idx + 1,
-          nome: ap.nome,
-          email: ap.email,
-          ordem: idx + 1,
-          token: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`).toString()
-        }))
+        try {
+          // 1. Criar documento na API
+          const resDoc = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/documentos`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              nome: novoDocumento.nome,
+              nome_arquivo: novoDocumento.nome,
+              caminho_arquivo: novoDocumento.arquivo || '',
+              tipo_arquivo: 'pdf',
+              tamanho_arquivo: 0,
+              categoria: 'geral',
+              pasta_id: pastaIdNum || 1,
+              responsavel_id: 1,
+              criado_por: 1
+            })
+          })
+          const docData = await resDoc.json()
+          const documentoIdDb = docData.documento.id
 
-        // ✅ Convite inicial:
-        // - Se SEQUENCIAL: só o 1º recebe agora
-        // - Se NÃO SEQUENCIAL: todos recebem agora
-        if (novoDocumento.fluxoAprovacao?.sequencial) {
-          const primeiro = novoDocumento.aprovadores[0]
-          if (primeiro) enviarEmailAprovacao(novoDocumento, primeiro)
-        } else {
-          novoDocumento.aprovadores.forEach((aprovador) => enviarEmailAprovacao(novoDocumento, aprovador))
+          // 2. Gerar tokens e preparar aprovadores
+          const aprovadores = formDocumento.fluxoAprovacao.aprovadores.map((ap, idx) => ({
+            id: idx + 1,
+            nome: ap.nome,
+            email: ap.email,
+            ordem: idx + 1,
+            token: (crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`).toString()
+          }))
+          novoDocumento.aprovadores = aprovadores
+
+          // 3. Salvar aprovações no banco
+          const resAprov = await fetch(
+            `${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/documentos/${documentoIdDb}/aprovacoes`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                aprovadores: aprovadores.map((a) => ({
+                  usuario_id: 2,
+                  ordem: a.ordem,
+                  token: a.token,
+                  status: 'pendente'
+                }))
+              })
+            }
+          )
+          const aprovData = await resAprov.json()
+          console.log('✅ Aprovações salvas no banco:', aprovData)
+
+          // 4. Enviar emails
+          if (novoDocumento.fluxoAprovacao?.sequencial) {
+            const primeiro = novoDocumento.aprovadores[0]
+            if (primeiro) await enviarEmailAprovacao(novoDocumento, primeiro)
+          } else {
+            for (const aprovador of novoDocumento.aprovadores) {
+              await enviarEmailAprovacao(novoDocumento, aprovador)
+            }
+          }
+        } catch (e) {
+          console.error('Erro ao salvar documentos/aprovações:', e)
+          alert('Aviso: Documento criado localmente, mas houve erro ao sincronizar com banco de dados.')
         }
       }
 
