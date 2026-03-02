@@ -1,0 +1,8 @@
+# Development requirements (do not install in production)
+pytest
+pytest-flask
+black
+flake8
+bandit
+pip-audit
+owasp-zap-v2.9

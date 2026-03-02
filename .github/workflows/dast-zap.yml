@@ -1,0 +1,33 @@
+name: DAST - OWASP ZAP
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 3 * * *'  # daily at 03:00 UTC
+
+jobs:
+  zap_scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start application (docker-compose)
+        run: |
+          # This project doesn't include docker-compose for CI by default.
+          # If you have a staging image, start it here. Otherwise skip.
+          echo "Ensure target app is reachable for ZAP scan"
+
+      - name: Run ZAP baseline scan
+        uses: zaproxy/action-baseline@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target: 'http://localhost:5000'
+          format: 'xml'
+          output: 'zap-report.xml'
+
+      - name: Upload ZAP report
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: zap-report.xml
