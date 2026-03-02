@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, security-fixes ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/riosf5-backend/requirements.txt
+          pip install bandit pip-audit
+
+      - name: Run tests
+        working-directory: backend/riosf5-backend
+        run: |
+          pytest -q
+
+      - name: Run Bandit (static security scan)
+        run: |
+          bandit -r backend/riosf5-backend/src -f simple -o bandit-report.txt || true
+
+      - name: Run pip-audit (dependency audit)
+        run: |
+          pip-audit --progress=off || true
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: |
+            bandit-report.txt
