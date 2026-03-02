@@ -1,89 +1,170 @@
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
+from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
+from sqlalchemy.exc import SQLAlchemyError
 from src.models.documento import Documento
-from src.models.auxiliares import AprovacaoDocumento
 from src.models.user import db
+from src.routes.auth import token_required
+from src.services.storage_service import get_storage_service, StorageError
+import os
 from datetime import datetime
+import mimetypes
 
 documentos_bp = Blueprint('documentos', __name__)
 
+@documentos_bp.route('/', methods=['GET'])
+@token_required
+def get_documentos(current_user):
+    """Listar todos os documentos (filtrados por empresa para usuários não-master)"""
+    try:
+        query = Documento.query
+        if not current_user.is_master():
+            # aplica filtro por empresa do usuário para evitar vazamento entre empresas
+            query = query.filter(Documento.empresa_id == current_user.empresa_id)
+        documentos = query.all()
+        storage = get_storage_service()
+        return jsonify([{
+            'id': doc.id,
+            'nome': doc.nome,
+            'tipo': doc.tipo,
+            'caminho': doc.caminho,
+            'tamanho': doc.tamanho,
+            'data_upload': doc.data_upload.isoformat() if doc.data_upload else None,
+            'usuario_id': doc.usuario_id,
+            'pasta_id': doc.pasta_id,
+            'url': storage.get_file_url(doc.caminho_arquivo)
+        } for doc in documentos]), 200
+    except (SQLAlchemyError, ValueError, KeyError) as e:
+        current_app.logger.error(f'Erro ao listar documentos: {str(e)}')
+        return jsonify({'error': 'Erro ao listar documentos. Por favor, tente novamente.'}), 500
+
 @documentos_bp.route('/', methods=['POST'])
-def criar_documento():
-    data = request.get_json() or {}
-    # Campos mínimos esperados
-    doc = Documento(
-        nome=data.get('nome', 'Documento sem nome'),
-        nome_arquivo=data.get('nome_arquivo', ''),
-        caminho_arquivo=data.get('caminho_arquivo', ''),
-        tipo_arquivo=data.get('tipo_arquivo', 'pdf'),
-        tamanho_arquivo=data.get('tamanho_arquivo', 0),
-        categoria=data.get('categoria', 'geral'),
-        pasta_id=data.get('pasta_id', 1) or 1,
-        responsavel_id=data.get('responsavel_id', 1) or 1,
-        criado_por=data.get('criado_por', 1) or 1,
-        protegido_senha=bool(data.get('protegido_senha', False)),
-        senha_hash=data.get('senha_hash')
-    )
-    db.session.add(doc)
-    db.session.commit()
-    return jsonify({'ok': True, 'documento': doc.to_dict(include_sensitive=True)}), 201
+@token_required
+def upload_documento(current_user):
+    """Fazer upload seguro de documento"""
+    try:
+        # Validar existência de arquivo
+        if 'arquivo' not in request.files:
+            return jsonify({'error': 'Nenhum arquivo foi enviado'}), 400
+        
+        arquivo = request.files['arquivo']
+        if arquivo.filename == '':
+            return jsonify({'error': 'Arquivo sel vazio'}), 400
+        
+        # Parâmetros obrigatórios
+        nome = request.form.get('nome', '').strip()
+        categoria = request.form.get('categoria', 'outro').strip()
+        pasta_id = request.form.get('pasta_id')
+        
+        if not nome:
+            return jsonify({'error': 'Nome do documento é obrigatório'}), 400
+        if not pasta_id:
+            return jsonify({'error': 'Pasta ID é obrigatório'}), 400
+        
+        # Validar tamanho máximo (100 MB)
+        max_file_size = current_app.config.get('MAX_CONTENT_LENGTH', 100 * 1024 * 1024)
+        if len(arquivo.getvalue() if hasattr(arquivo, 'getvalue') else arquivo.read()) > max_file_size:
+            return jsonify({'error': 'Arquivo muito grande (máx 100MB)'}), 413
+        
+        # Extensões permitidas
+        allowed_extensions = {'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'jpg', 'jpeg', 'png', 'txt', 'zip'}
+        filename_safe = secure_filename(arquivo.filename)
+        file_ext = filename_safe.rsplit('.', 1)[1].lower() if '.' in filename_safe else ''
+        
+        if file_ext not in allowed_extensions:
+            return jsonify({'error': f'Tipo de arquivo não permitido. Permitidos: {{", ".join(allowed_extensions)}}'}), 400
+        
+            # Use StorageService for actual persistence
+        storage = get_storage_service()
+        try:
+            # compute size before sending (file_obj may be seekable)
+            try:
+                arquivo.stream.seek(0, os.SEEK_END)
+                file_size = arquivo.stream.tell()
+                arquivo.stream.seek(0)
+            except Exception:
+                file_size = None
 
-@documentos_bp.route('/<int:doc_id>/aprovacoes', methods=['POST'])
-def criar_aprovacoes(doc_id):
-    data = request.get_json() or {}
-    aprovadores = data.get('aprovadores', [])
-    created = []
-    for ap in aprovadores:
-        item = AprovacaoDocumento(
-            documento_id=doc_id,
-            usuario_id=ap.get('usuario_id'),
-            status=ap.get('status', 'pendente'),
-            observacoes=ap.get('observacoes'),
-            ordem=ap.get('ordem', 0),
-            token=ap.get('token')
+            public_url, internal_path = storage.save_file(arquivo, current_user.empresa_id, filename_safe)
+        except StorageError as exc:
+            return jsonify({'error': f'Erro de armazenamento: {str(exc)}'}), 500
+
+        mime_type, _ = mimetypes.guess_type(filename_safe)
+
+        # Criar registro no banco
+        documento = Documento(
+            nome=nome,
+            nome_arquivo=filename_safe,
+            caminho_arquivo=internal_path,
+            tipo_arquivo=file_ext,
+            tamanho_arquivo=file_size or 0,
+            categoria=categoria,
+            pasta_id=int(pasta_id),
+            responsavel_id=current_user.id,
+            criado_por=current_user.id,
+            empresa_id=current_user.empresa_id,
+            data_upload=datetime.utcnow()
         )
-        db.session.add(item)
-        created.append(item)
-    db.session.commit()
-    return jsonify({'ok': True, 'aprovacoes': [ { 'id': a.id, 'usuario_id': a.usuario_id, 'token': a.token } for a in created ]}), 201
+        
+        db.session.add(documento)
+        db.session.commit()
+        
+        result_data = {
+            'id': documento.id,
+            'nome': documento.nome,
+            'nome_arquivo': documento.nome_arquivo,
+            'tamanho': documento.tamanho_arquivo,
+            'tipo': file_ext,
+            'data_upload': documento.data_upload.isoformat(),
+            'url': public_url
+        }
+        return jsonify({'success': True, 'message': 'Documento enviado com sucesso', 'data': result_data}), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Erro ao fazer upload: {str(e)}'}), 500
 
-@documentos_bp.route('/aprovacoes/validar', methods=['GET'])
-def validar_token():
-    token = request.args.get('token')
-    if not token:
-        return jsonify({'ok': False, 'error': 'token ausente'}), 400
-    aprov = AprovacaoDocumento.query.filter_by(token=token).first()
-    if not aprov:
-        return jsonify({'ok': False, 'error': 'token inválido'}), 404
-    doc = aprov.documento
-    return jsonify({'ok': True, 'aprovacao': {
-        'id': aprov.id,
-        'documento_id': aprov.documento_id,
-        'usuario_id': aprov.usuario_id,
-        'status': aprov.status,
-        'observacoes': aprov.observacoes,
-        'ordem': aprov.ordem,
-        'assinatura': aprov.assinatura
-    }, 'documento': doc.to_dict()}), 200
+@documentos_bp.route('/<int:id>', methods=['GET'])
+@token_required
+def get_documento(current_user, id):
+    """Obter documento específico"""
+    try:
+        documento = Documento.query.get_or_404(id)
+        if not current_user.is_master() and documento.empresa_id != current_user.empresa_id:
+            return jsonify({'error': 'Acesso negado ao documento'}), 403
+        storage = get_storage_service()
+        public_link = storage.get_file_url(documento.caminho_arquivo)
+        return jsonify({
+            'id': documento.id,
+            'nome': documento.nome,
+            'tipo': documento.tipo,
+            'caminho': documento.caminho,
+            'tamanho': documento.tamanho,
+            'data_upload': documento.data_upload.isoformat() if documento.data_upload else None,
+            'usuario_id': documento.usuario_id,
+            'pasta_id': documento.pasta_id,
+            'url': public_link
+        }), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
-@documentos_bp.route('/aprovacoes/<int:aprov_id>/acao', methods=['POST'])
-def acao_aprovacao(aprov_id):
-    data = request.get_json() or {}
-    aprov = AprovacaoDocumento.query.get(aprov_id)
-    if not aprov:
-        return jsonify({'ok': False, 'error': 'aprovacao não encontrada'}), 404
-    token = data.get('token')
-    # Se token for fornecido, certifique-se que bate com o registrado (se existir)
-    if aprov.token and token and aprov.token != token:
-        return jsonify({'ok': False, 'error': 'token inválido para esta aprovação'}), 403
-    aprov.acao = data.get('acao')
-    aprov.assinatura = data.get('assinatura')
-    aprov.status = data.get('acao') or aprov.status
-    aprov.data_aprovacao = datetime.utcnow()
-    db.session.commit()
-    return jsonify({'ok': True, 'aprovacao': {
-        'id': aprov.id,
-        'status': aprov.status,
-        'acao': aprov.acao,
-        'assinatura': aprov.assinatura,
-        'data_aprovacao': aprov.data_aprovacao.isoformat() if aprov.data_aprovacao else None
-    }}), 200
+@documentos_bp.route('/<int:id>', methods=['DELETE'])
+@token_required
+def delete_documento(current_user, id):
+    """Deletar documento"""
+    try:
+        documento = Documento.query.get_or_404(id)
+        if not current_user.is_master() and documento.empresa_id != current_user.empresa_id:
+            return jsonify({'error': 'Acesso negado ao documento'}), 403
+        # tentar remover do armazenamento também
+        storage = get_storage_service()
+        try:
+            storage.delete_file(documento.caminho_arquivo)
+        except Exception:
+            current_app.logger.warning('Falha ao excluir arquivo no storage')
+        db.session.delete(documento)
+        db.session.commit()
+        return jsonify({'message': 'Documento deletado com sucesso'}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
